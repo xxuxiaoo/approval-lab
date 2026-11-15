@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f5f2">
+  <meta name="description" content="本地审核模型评测、中转站费用比较与回归测试">
+  <title>Approval Lab · 审核模型实验室</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" type="module"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#lab" aria-label="Approval Lab 首页"><span class="brand-icon">a<span>·</span></span><span>approval<span class="brand-light">lab</span><small>审核模型实验室</small></span></a>
+    <div class="workspace-label"><span class="green-dot"></span> LOCAL WORKSPACE <span class="keycap">01</span></div>
+    <nav aria-label="主导航">
+      <a href="#lab" data-nav="lab"><span class="nav-icon">◈</span> 实验台 <span class="nav-arrow">↗</span></a>
+      <a href="#history" data-nav="history"><span class="nav-icon">◷</span> 历史记录 <span id="history-count" class="nav-count">0</span></a>
+      <a href="#schedules" data-nav="schedules"><span class="nav-icon">◴</span> 定时测试</a>
+      <a href="#cases" data-nav="cases"><span class="nav-icon">▤</span> 测试语料</a>
+      <a href="#providers" data-nav="providers"><span class="nav-icon">⌘</span> 中转站管理</a>
+    </nav>
+    <div class="sidebar-bottom"><div class="local-card"><span class="local-symbol">⌂</span><div>数据留在本机<small>Key 加密保存 · 无遥测</small></div></div><div class="version"><span id="version">v0.1.0</span><span>开源 · MIT</span></div></div>
+  </aside>
+  <div class="app-shell">
+    <header class="topbar"><div><span class="breadcrumb">工作空间</span><span class="slash">/</span><span id="page-label">实验台</span></div><div class="server-badge"><span class="green-dot"></span><span id="server-status">正在连接本地服务</span></div></header>
+    <main id="main" tabindex="-1"><div class="loading-page">正在打开实验室…</div></main>
+    <footer><span>APPROVAL LAB</span><span>用可复现的结果，选择下一位审核员。</span><a href="#cases">了解测试方法 ↗</a></footer>
+  </div>
+  <dialog id="modal"><div id="modal-body"></div></dialog>
+  <div id="toasts" aria-live="polite"></div>
+</body>
+</html>

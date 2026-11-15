@@ -1,0 +1,10 @@
+services:
+  approval-lab:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - approval-lab-data:/app/data
+    restart: unless-stopped
+volumes:
+  approval-lab-data:
