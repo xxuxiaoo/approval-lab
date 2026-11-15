@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import json
@@ -13,9 +14,15 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .benchmark import builtin_cases, metadata
+from .cc_capture import capture_claude
+from .interactive import review_rows
+from .native_api import register_native_routes
+from .official import profile_status
 from .pricing import PRICING_PRESETS
 from .providers import ProviderClient, ProviderError
 from .runner import RunEngine, next_due, result_rows
+from .scenarios import builtin_scenarios
+from .scenarios import metadata as scenario_metadata
 from .schemas import Pricing, ProviderInput, RunInput, ScheduleInput
 from .storage import InstanceLock, Store, dumps, now_iso
 
@@ -23,6 +30,7 @@ STATIC = Path(__file__).parent / "static"
 
 
 def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
+    prepare_lock = asyncio.Lock()
     @asynccontextmanager
     async def lifespan(app):
         directory = Path(data_dir or os.environ.get("APPROVAL_LAB_DATA_DIR", "data"))
@@ -92,7 +100,40 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
     @app.get("/api/meta")
     async def meta():
         return {"version": __version__, "benchmark": metadata(), "pricing_presets": PRICING_PRESETS,
-                "pricing_checked_at": "2026-11-15", "scheduler_requires_running_app": True}
+                "pricing_checked_at": "2026-11-15", "scheduler_requires_running_app": True,
+                "official": scenario_metadata(), "official_profiles": profile_status(app.state.store.directory)}
+
+    @app.get("/api/official/status")
+    async def official_status():
+        return profile_status(app.state.store.directory)
+
+    @app.post("/api/official/prepare")
+    async def official_prepare():
+        if prepare_lock.locked():
+            raise ValueError("官方配置正在准备，请等待当前操作完成。")
+        async with prepare_lock:
+            await asyncio.to_thread(capture_claude, app.state.store.directory)
+        return profile_status(app.state.store.directory)
+
+    @app.get("/api/official/cases")
+    async def official_cases(profile: str = "both", scope: str = "full"):
+        values = []
+        for case in builtin_scenarios():
+            if profile not in ("both", case.scene.profile) or scope == "light" and not case.light:
+                continue
+            value = case.model_dump()
+            value["context_chars"] = sum(len(t.text) for t in case.scene.turns)
+            value["scene"] = {key: item for key, item in value["scene"].items()
+                              if key not in ("turns", "files", "links", "git")}
+            values.append(value)
+        return values
+
+    @app.get("/api/official/cases/{case_id}")
+    async def official_case(case_id: str):
+        case = next((c for c in builtin_scenarios() if c.id == case_id), None)
+        if case is None:
+            raise HTTPException(404, "场景不存在")
+        return case.model_dump()
 
     @app.get("/api/health")
     async def health():
@@ -147,6 +188,8 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
     async def preview_run(config: RunInput):
         selected, _provider, total = app.state.engine.validate(config)
         return {"requests": total, "unique_cases": len(selected),
+                "request_budget": config.request_budget,
+                "requests_are_lower_bound": config.mode == "official",
                 "risky_cases": sum(c.expected != "allow" for c in selected),
                 "safe_cases": sum(c.expected == "allow" for c in selected)}
 
@@ -167,13 +210,32 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
     async def list_runs(limit: int = 200, offset: int = 0):
         rows = app.state.store.query("SELECT id FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?",
                                      (max(1, min(limit, 1000)), max(0, offset)))
-        return [get_run(row["id"]) for row in rows]
+        runs = [get_run(row["id"]) for row in rows]
+        for run in runs:
+            run["snapshot"].pop("native_cases", None)
+            run["snapshot"].pop("official_cases", None)
+            run["snapshot"].pop("official_profiles", None)
+        return runs
 
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str):
         run = get_run(run_id)
         run["results"] = result_rows(app.state.store, run_id)
+        # Complete frozen inputs remain available in JSON export and trace endpoints.
+        run["snapshot"].pop("official_cases", None)
+        run["snapshot"].pop("official_profiles", None)
+        if run["config"]["mode"] == "official":
+            run["review_turns"] = [{key: value for key, value in row.items() if key != "request"}
+                                   for row in review_rows(app.state.store, run_id)]
         return run
+
+    @app.get("/api/runs/{run_id}/turns/{trace_id}")
+    async def review_turn(run_id: str, trace_id: int):
+        get_run(run_id)
+        row = next((r for r in review_rows(app.state.store, run_id) if r["id"] == trace_id), None)
+        if row is None:
+            raise HTTPException(404, "审核轮次不存在")
+        return row
 
     @app.post("/api/runs/{run_id}/stop")
     async def stop_run(run_id: str):
@@ -199,6 +261,8 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
     async def export_run(run_id: str, format: str = "json"):
         run = get_run(run_id)
         run["results"] = result_rows(app.state.store, run_id)
+        if run["config"]["mode"] == "official":
+            run["review_turns"] = review_rows(app.state.store, run_id)
         if format == "csv":
             output = io.StringIO(newline="")
             fields = ["case_id", "title", "category", "repeat_index", "expected", "decision", "error",
@@ -261,6 +325,7 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
         app.state.store.execute("DELETE FROM schedules WHERE id=?", (schedule_id,))
         return {"ok": True}
 
+    register_native_routes(app)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
 

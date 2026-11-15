@@ -1,0 +1,41 @@
+{
+  "version": "0.167.2",
+  "commit": "ce21072c90d32c40af7a55b60b2fb35c84a43a6a",
+  "files": [
+    {
+      "file": "codex-policy.md",
+      "source": "codex-rs/prompts/templates/guardian/policy.md",
+      "sha256": "e6b0cf0a2e1c4cabc0a37ac2a0bc424ddd7c89e85d049e32d281a8db6e8d3ce6"
+    },
+    {
+      "file": "codex-policy-template.md",
+      "source": "codex-rs/prompts/templates/guardian/policy_template.md",
+      "sha256": "37441097e4e825e0b195c32c985817ea07da15bb5c20fa753d87b22e2fe47e73"
+    },
+    {
+      "file": "CODEX-LICENSE",
+      "source": "LICENSE",
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    {
+      "file": "CODEX-NOTICE",
+      "source": "NOTICE",
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    },
+    {
+      "file": "codex-output-contract.txt",
+      "source": "codex-rs/ext/guardian-reviewer/src/assessment.rs",
+      "sha256": "671f628da7434b81da8a3bdbd82eec9e977bbc754820ff5b3b0387e2cbf2928c"
+    },
+    {
+      "file": "codex-read-only.md",
+      "source": "codex-rs/prompts/templates/permissions/sandbox_mode/read_only.md",
+      "sha256": "509b39f88e6a4f5cb36485ea8b340680c03f27175ba20200b823ec07bc79668d"
+    },
+    {
+      "file": "codex-never.md",
+      "source": "codex-rs/prompts/templates/permissions/approval_policy/never.md",
+      "sha256": "41c7931bac2391a24046362bd07615d5a3e73dca4672b911516fac99646be8c4"
+    }
+  ]
+}

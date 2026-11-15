@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "approval-lab"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local command-approval model benchmarks, relay cost tracking, and regression monitoring."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,7 +34,7 @@ Issues = "https://github.com/xxuxiaoo/approval-lab/issues"
 include = ["approval_lab*"]
 
 [tool.setuptools.package-data]
-approval_lab = ["static/*"]
+approval_lab = ["static/*", "official_assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

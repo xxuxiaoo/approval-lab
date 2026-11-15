@@ -18,6 +18,93 @@ from approval_lab.app import create_app
 from tests.conftest import OfflineClient
 
 
+def exercise_native(page, artifacts):
+    # Fabricated fixture checks UI and wire storage, never real-model capability.
+    request_body = {"model": "original-fixture", "stream": True, "max_completion_tokens": 2000,
+                    "messages": [{"role": "system", "content": "offline fixture policy, not an official prompt"},
+                                 {"role": "user", "content": "neutral offline history\n" * 600 + "fixture proposed action"}]}
+    record = {"title": "离线界面验证 · 完整上下文", "source": "codex", "request": {
+        "protocol": "chat", "body": request_body}, "contract": {"preset": "codex_guardian"},
+        "observed_response": '{"outcome":"deny"}', "label_reviewed": False}
+    page.locator("[data-nav=native]").click()
+    page.get_by_role("heading", name="测模型真正收到的审核请求。").wait_for()
+    page.get_by_role("button", name="创建审核录制入口").click()
+    page.locator("#native-capture [name=provider_id]").select_option(index=1)
+    page.get_by_role("button", name="创建录制入口", exact=True).click()
+    page.get_by_role("heading", name="录制入口已就绪").wait_for()
+    assert "/record/" in page.get_by_label("本地 API 根地址").input_value()
+    assert len(page.get_by_label("专用本地 Key").input_value()) >= 32
+    page.get_by_role("button", name="已记录配置").click()
+    page.get_by_role("button", name="停止录制，保留转发").click()
+    page.get_by_text("已停止录制，继续透传", exact=False).wait_for()
+    page.get_by_role("button", name="导入完整请求", exact=True).click()
+    page.locator("#native-import input[type=file]").set_input_files({
+        "name": "offline-native-fixture.json", "mimeType": "application/json",
+        "buffer": json.dumps({"version": "native.v1", "records": [record]}, ensure_ascii=False).encode()})
+    page.get_by_role("button", name="导入并保存").click()
+    page.locator("#modal").wait_for(state="hidden")
+    page.get_by_role("button", name="查看 / 标注").first.click()
+    annotation = page.locator("#native-annotation")
+    annotation.locator("[name=expected]").select_option("deny")
+    annotation.locator("[name=rationale]").fill("手工确认离线样本的参考标签，仅用于软件验证。")
+    annotation.locator("[name=label_reviewed]").check()
+    annotation.locator("[name=light]").check()
+    page.get_by_role("button", name="保存人工标注").click()
+    page.locator("#modal").wait_for(state="hidden")
+    page.get_by_role("button", name="长上下文", exact=True).first.click()
+    page.locator("#native-stress [name=pointer]").fill("/messages/1/content")
+    page.locator("#native-stress [name=lengths]").fill("32000")
+    page.get_by_role("button", name="生成 3 个位置的变体").click()
+    page.locator("#modal").wait_for(state="hidden")
+    page.locator('[data-action="native-edit"]').nth(3).wait_for()
+    assert page.locator('[data-action="native-edit"]').count() == 4
+    page.evaluate("document.querySelector('#toasts').replaceChildren()")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.screenshot(path=artifacts / "native-library-mobile.png", full_page=True)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Native mobile overflow"
+    page.set_viewport_size({"width": 1480, "height": 1000})
+    page.screenshot(path=artifacts / "native-library-desktop.png", full_page=True)
+    page.get_by_role("button", name="去测已标注用例 ↗").click()
+    page.wait_for_url("**/#lab")
+    assert page.locator("[name=mode][value=native]").is_checked()
+    assert page.locator("[name=system_prompt]").is_disabled()
+    assert page.locator("#request-count").inner_text() == "4"
+    assert "3" in page.locator("#coverage-card").inner_text()
+    page.locator("[name=native_scope]").select_option("light")
+    assert page.locator("#request-count").inner_text() == "1"
+    page.locator("[name=native_scope]").select_option("full")
+    page.get_by_role("button", name="开始测试").click()
+    page.wait_for_url("**/#report/*")
+    page.get_by_text("本轮未观察到危险误放行。", exact=True).wait_for()
+    page.get_by_text("原生回放覆盖与长上下文表现", exact=True).wait_for()
+    assert page.locator("tr[data-result]").count() == 4
+    # Actual usage is 100 per fixture despite long character inputs.
+    page.get_by_role("cell", name="0–8k", exact=True).wait_for()
+    page.locator("tr[data-result]").first.click()
+    page.get_by_role("heading", name="冻结的原生请求", exact=False).first.wait_for()
+    page.evaluate("document.querySelector('#toasts').replaceChildren()")
+    page.screenshot(path=artifacts / "native-report-desktop.png", full_page=True)
+    with page.expect_download() as downloaded:
+        page.get_by_role("button", name="JSON ↓", exact=True).click()
+    export = json.loads(Path(downloaded.value.path()).read_text(encoding="utf-8"))
+    assert export["snapshot"]["evaluation_type"] == "native_replay"
+    assert len(export["snapshot"]["native_cases"]) == 4
+    assert any(c["native"]["request"]["body"] == request_body for c in export["snapshot"]["native_cases"])
+    page.get_by_role("button", name="复用配置 ↗").click()
+    page.wait_for_url("**/#lab")
+    assert page.locator("[name=mode][value=native]").is_checked()
+    assert page.locator("#request-count").inner_text() == "4"
+    page.locator("[data-nav=schedules]").click()
+    page.get_by_role("button", name="＋ 新建定时测试").click()
+    page.locator("#schedule-form [name=group_acknowledged]").check()
+    page.get_by_role("button", name="创建定时测试").click()
+    page.locator("#modal").wait_for(state="hidden")
+    page.get_by_role("button", name="暂停", exact=True).click()
+    page.get_by_role("button", name="暂停", exact=True).wait_for(state="hidden")
+    page.locator("[data-nav=lab]").click()
+    page.locator("[name=mode][value=light]").check()
+
+
 def main():
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
@@ -62,6 +149,7 @@ def main():
                 page.get_by_role("button", name="↻ 拉取模型").click()
                 page.locator("[name=model]").fill("offline-fixture")
                 page.locator("[name=group_name]").fill("离线回归验证组")
+                page.locator("[name=mode][value=light]").check()
                 page.locator("[name=cache_preset]").select_option("gpt56")
                 assert page.locator("[name=price_read]").input_value() == "0.1"
                 # A hidden invalid control used to silently block native form submission.
@@ -70,7 +158,7 @@ def main():
                         if request.method == "POST" and request.url.endswith("/api/runs") else None)
                 page.locator("[name=max_output_tokens]").evaluate("(x)=>x.value='0'")
                 page.get_by_role("button", name="开始测试").click()
-                assert page.locator("[name=max_output_tokens]").is_visible()
+                page.locator("[name=max_output_tokens]").wait_for(state="visible")
                 assert page.locator("[name=max_output_tokens]").get_attribute("aria-invalid") == "true"
                 assert "输出 token 上限" in page.locator("#run-form .form-error").inner_text()
                 assert not paid_requests
@@ -155,6 +243,37 @@ def main():
                 page.wait_for_url("**/#lab")
                 assert page.locator("[name=mode][value=custom]").is_checked()
                 page.locator("[name=mode][value=light]").check()
+                exercise_native(page, artifacts)
+                page.locator("[data-nav=official]").click()
+                page.get_by_role("heading", name="按官方流程，审核完整场景。").wait_for()
+                page.locator('[data-action="official-case"][data-id="official.codex.hidden-script"]').click()
+                page.get_by_role("button", name="只测这个场景").click()
+                page.wait_for_url("**/#lab")
+                assert page.locator("[name=mode][value=official]").is_checked()
+                assert page.locator("#request-count").inner_text() == "1"
+                page.get_by_role("button", name="开始测试").click()
+                page.wait_for_url("**/#report/*")
+                page.get_by_text("本轮未观察到危险误放行。", exact=True).wait_for()
+                page.get_by_text("官方流程与上下文覆盖", exact=True).wait_for()
+                assert page.locator("tr[data-result]").count() == 1
+                page.locator("tr[data-result]").first.click()
+                assert page.locator('[data-action="official-trace"]').count() == 2
+                page.locator('[data-action="official-trace"]').first.click()
+                page.get_by_role("heading", name="审核轮次 · codex_1").wait_for()
+                assert 'cat package.json' in page.locator('#modal').inner_text()
+                page.locator('[data-action="close-modal"]').first.click()
+                with page.expect_download() as downloaded:
+                    page.get_by_role("button", name="JSON ↓", exact=True).click()
+                official_export = json.loads(Path(downloaded.value.path()).read_text(encoding="utf-8"))
+                assert len(official_export['review_turns']) == 2
+                assert official_export['summary']['tokens']['input_tokens'] == 200
+                assert official_export['review_turns'][0]['evidence'][0]['result']['exit_code'] == 0
+                page.screenshot(path=artifacts / "official-report-desktop.png", full_page=True)
+                page.get_by_role("button", name="复用配置 ↗").click()
+                page.wait_for_url("**/#lab")
+                page.locator('[name=official_scope]').select_option('light')
+                assert page.locator('#request-count').inner_text() == '13'
+                page.screenshot(path=artifacts / "official-lab-desktop.png", full_page=True)
                 page.evaluate("window.scrollTo(0, 0); document.querySelector('#toasts').replaceChildren()")
                 page.screenshot(path=artifacts / "lab-configured-desktop.png", full_page=True)
                 page.set_viewport_size({"width": 390, "height": 844})
@@ -165,7 +284,10 @@ def main():
                                   "verified": ["hidden-field validation", "fractional temperature", "persistent errors",
                                                "duplicate-submit protection", "navigation despite stats failure", "key entry", "model listing", "full 120-case run", "price revision",
                                                "CSV download", "reuse", "40-case run", "comparison", "schedule pause",
-                                               "corpus search", "custom import", "mobile layout"],
+                                               "corpus search", "custom import", "mobile layout",
+                                               "native import and manual label", "native stress provenance",
+                                               "native scope selection", "native immutable wire export",
+                                               "native usage buckets", "native reuse and schedules", "native mobile layout"],
                                   "artifacts": str(artifacts)}, ensure_ascii=False))
                 browser.close()
         finally:

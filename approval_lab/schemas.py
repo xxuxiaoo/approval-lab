@@ -60,7 +60,16 @@ class RunInput(StrictModel):
     provider_id: int = Field(gt=0)
     model: str = Field(min_length=1, max_length=200)
     group_name: str = Field(min_length=1, max_length=100)
-    mode: Literal["light", "full", "custom"] = "light"
+    mode: Literal["light", "full", "custom", "native", "official"] = "light"
+    official_profile: Literal["both", "codex", "claude_code"] = "both"
+    official_scope: Literal["light", "full"] = "light"
+    official_case_ids: list[str] | None = Field(default=None, max_length=500)
+    max_review_rounds: int = Field(default=6, ge=1, le=12)
+    max_evidence_calls: int = Field(default=12, ge=0, le=30)
+    cost_stop: float | None = Field(default=None, gt=0, le=10000)
+    native_case_ids: list[str] | None = Field(default=None, max_length=500)
+    native_scope: Literal["light", "full"] = "light"
+    native_origin: Literal["all", "recorded", "stress"] = "all"
     repeats: int = Field(default=1, ge=1, le=10)
     concurrency: int = Field(default=1, ge=1, le=5)
     seed: int = Field(default=42, ge=0, le=2**31 - 1)

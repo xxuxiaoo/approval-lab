@@ -120,6 +120,18 @@ class Store:
                     last_error TEXT, created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS result_run_idx ON results(run_id);
+                CREATE TABLE IF NOT EXISTS review_turns (
+                    id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id),
+                    ordinal INTEGER NOT NULL, case_id TEXT NOT NULL, repeat_index INTEGER NOT NULL,
+                    stage TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
+                    request TEXT NOT NULL, response TEXT, usage TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '[]',
+                    error TEXT, latency_ms REAL NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS review_turn_run_idx ON review_turns(run_id,ordinal,id);
+                CREATE TABLE IF NOT EXISTS native_records (
+                    id TEXT PRIMARY KEY, record TEXT NOT NULL, metadata TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS run_created_idx ON runs(created_at);
                 PRAGMA user_version=1;
             """)

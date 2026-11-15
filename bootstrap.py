@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 def runtime_pins(root):
+    import tomllib
+
     pins = []
     for line in (root / "requirements.lock").read_text(encoding="utf-8").splitlines():
         if not line or line.startswith("#"):
@@ -23,7 +25,8 @@ def runtime_pins(root):
             if sys.platform != "win32":
                 continue
         pins.append(requirement.strip().split("==", 1))
-    return pins + [["approval-lab", "0.1.0"]]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    return pins + [[project["name"], project["version"]]]
 
 
 def launch_desktop(root, python, port, timeout=35):

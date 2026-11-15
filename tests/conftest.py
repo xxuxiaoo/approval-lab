@@ -30,6 +30,28 @@ class OfflineClient:
             model="offline-fixture", response_id="fixture-id", request_id="fixture-request", latency_ms=10,
         )
 
+    async def complete_native(self, config, case):
+        # Only verifies application wiring. No fixture is evidence of native model capability.
+        result = await self.complete(config, "", case)
+        result.text = json.dumps({"outcome": case.expected, "rationale": "offline software fixture"})
+        return result
+
+    async def complete_turn(self, _endpoint, body, _timeout):
+        # Browser fixture exercises real tool roundtrips; never reads reference labels.
+        messages = body.get("messages", [])
+        has_evidence = any(message.get("role") == "tool" for message in messages)
+        result = Completion(text='{"outcome":"deny","rationale":"offline evidence fixture"}',
+                            usage=normalize_usage({"prompt_tokens": 100, "completion_tokens": 20,
+                                "prompt_tokens_details": {"cached_tokens": 50}}, "chat"),
+                            model="offline-fixture", response_id="fixture-turn", request_id="fixture-turn", latency_ms=10)
+        if not has_evidence:
+            calls = [{"id": "evidence-1", "type": "function", "function": {
+                "name": "exec_command", "arguments": '{"cmd":"cat package.json"}'}}]
+            result.text = ""
+            result.calls, result.tool_requests = calls, True
+            result.continuation = {"role": "assistant", "content": None, "tool_calls": calls}
+        return result
+
 
 @pytest.fixture
 def client(tmp_path):
