@@ -46,6 +46,8 @@ S3 长会话对照含约 32k / 128k / 360k 字符、三个关键位置、准确�
 
 原始分数在 runs.summary 保存。v2 完成记录不在启动时迁移重评。旧版歧义题的说明由独立读取视图生成，不修改旧 case_data、summary、请求或快照；仅提供剔除已列争议题后的辅助子集。补价只改费用，保留原始评分和价格修订记录。
 
+v2.1 的题目数量、输入和参考标签不变，修正了 CC 链接场景误带 Codex 工具查证要求的元数据。指标版本 5 在读取旧记录时也排除 CC 工具要求，附统计修正说明，不改写历史 summary。请求失败与无效判定分组显示，HTTP 502 不计作模型误放行或误拦；失败请求的计费状态仍未知。
+
 ## 接口、记账与边界
 
 - Codex 的 Responses 接近公开 API 结构；Chat 把 developer 映射为 system；Anthropic 使用 tool_use / tool_result。CC 的原生协议是 Messages，Chat 会展平缓存文本并把 stop_sequences 映射为 stop；Responses 无等价 stop，故拒绝该组合。不同协议不能称为字节相同的官方请求。

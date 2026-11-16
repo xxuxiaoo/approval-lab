@@ -95,12 +95,22 @@ class VirtualEnvironment:
 
     def query(self, command, cwd):
         # Explicitly reject shell execution semantics rather than pretending to execute.
-        if re.search(r"`|\$\(|\$\{|\beval\b|\bexec\b|[<>]", command):
+        if re.search(r"`|\$\(|\$\{|\beval\b|\bexec\b", command):
             raise EvidenceError("Unsupported shell expansion/execution/redirection; use cat, ls, stat, readlink, realpath, rg or git")
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
+        # A common read-only inspection suppresses stderr. Model only this exact
+        # null sink; no redirection can create or modify a host/fixture file.
+        filtered, index = [], 0
+        while index < len(tokens):
+            if tokens[index:index+3] == ["2", ">", "/dev/null"]:
+                index += 3
+            else:
+                filtered.append(tokens[index])
+                index += 1
+        tokens = filtered
         if any(token in ("&", "||", ">", ">>", "<", "<<") for token in tokens):
             raise FixtureLimit("Only sequential read queries and bounded read-only pipelines are supported")
         parts, current = [], []
@@ -163,20 +173,24 @@ class VirtualEnvironment:
         if tool == "find":
             root = self.resolve(rest[0] if rest and not rest[0].startswith("-") else ".", cwd)
             flags = rest[1:] if rest and not rest[0].startswith("-") else rest
-            depth, name_filter, type_filter = 100, "*", None
+            depth, name_filter, type_filter, output_format = 100, "*", None, None
             index = 0
             while index < len(flags):
                 flag = flags[index]
                 if flag == "-print":
                     index += 1
                     continue
-                if flag not in ("-maxdepth", "-name", "-type") or index + 1 >= len(flags):
-                    raise FixtureLimit("Supported find flags: -maxdepth N, -name GLOB, -type f/d/l, -print")
+                if flag not in ("-maxdepth", "-name", "-type", "-printf") or index + 1 >= len(flags):
+                    raise FixtureLimit("Supported find flags: -maxdepth N, -name GLOB, -type f/d/l, -print, -printf FORMAT")
                 value = flags[index + 1]
                 if flag == "-maxdepth":
                     depth = int(value)
                 elif flag == "-name":
                     name_filter = value
+                elif flag == "-printf":
+                    if re.search(r"%(?![%ypf])|\\(?![nt\\])", value):
+                        raise FixtureLimit("Find format supports %y, %p, %f, %%, newline and tab only")
+                    output_format = value
                 else:
                     type_filter = value
                 index += 2
@@ -193,14 +207,23 @@ class VirtualEnvironment:
                     continue
                 kind = "l" if path in self.links else "f" if path in self.files else "d"
                 if (type_filter is None or type_filter == kind) and fnmatch.fnmatch(posixpath.basename(path), name_filter):
-                    found.append(path)
-            return "\n".join(found)
+                    if output_format is None:
+                        found.append(path + "\n")
+                    else:
+                        fields = {"%": "%", "y": kind, "p": path, "f": posixpath.basename(path)}
+                        value = re.sub(r"%([%ypf])", lambda match, fields=fields: fields[match[1]], output_format)
+                        value = re.sub(r"\\([nt\\])", lambda match: {"n": "\n", "t": "\t", "\\": "\\"}[match[1]], value)
+                        found.append(value)
+            return "".join(found)
         if tool in ("ls", "get-childitem", "dir"):
             paths = [x for x in rest if not x.startswith("-")]
             root = self.resolve(paths[0] if paths else ".", cwd)
             # ls -ld must show the link itself as well as its resolved target.
             link = self.absolute(paths[0], cwd) if paths else cwd
-            entries = [json.dumps(self.inspect(link, cwd))] if link in self.links or root in self.files else []
+            directory_only = tool == "ls" and any(arg.startswith("-") and "d" in arg[1:] for arg in rest)
+            entries = [json.dumps(self.inspect(link, cwd))] if directory_only or link in self.links or root in self.files else []
+            if directory_only:
+                return "\n".join(entries)
             entries += [f"{name}\t{len(content.encode())} bytes" for name, content in sorted(self.files.items())
                         if name.startswith(root.rstrip("/") + "/")]
             if not entries and not self.exists(root):

@@ -12,7 +12,34 @@ import uvicorn
 from playwright.sync_api import sync_playwright
 
 from approval_lab.app import create_app
+from approval_lab.providers import ProviderError
 from tests.conftest import OfflineClient
+from tests.test_official import cc_fixture
+
+
+class BrowserClient(OfflineClient):
+    async def complete_turn(self, endpoint, body, timeout):
+        if body["model"] == "offline-502-fixture":
+            raise ProviderError("HTTP 502：中转上游异常（不保存响应错误正文）")
+        return await super().complete_turn(endpoint, body, timeout)
+
+
+def failure_report_flow(page):
+    provider_id = page.request.get('http://127.0.0.1:18766/api/providers').json()[0]['id']
+    response = page.request.post('http://127.0.0.1:18766/api/runs', headers={'X-Approval-Lab': '1'}, data={
+        'provider_id': provider_id, 'model': 'offline-502-fixture', 'group_name': 'offline fixture',
+        'official_profile': 'claude_code', 'official_scope': 'full',
+        'official_case_ids': ['official.claude_code.junction']})
+    assert response.status == 201
+    page.goto('http://127.0.0.1:18766/#report/'+response.json()['id'])
+    page.get_by_text('本轮已结束，1 个场景未取得有效判定。', exact=True).wait_for()
+    page.get_by_text('HTTP 502 · 1 个场景 · CC 快速阶段', exact=True).wait_for()
+    page.get_by_text('本轮没有可计分的查证题。', exact=False).wait_for()
+    page.get_by_role('button', name='查看失败的题', exact=False).click()
+    assert page.locator('tr[data-result]').count() == 1
+    assert page.locator('[data-action=result-filter][data-id=transport]').get_attribute('class') == 'selected'
+    page.locator('tr[data-result]').first.click()
+    page.get_by_text('HTTP 502：中转上游异常（不保存响应错误正文）', exact=True).wait_for()
 
 
 def native_flow(page, artifacts):
@@ -79,9 +106,33 @@ def exercise(page, artifacts):
     form.locator('[name=api_key]').fill('sk-offline-fixture-not-a-real-key')
     page.get_by_role('button', name='保存连接').click()
     page.locator('#modal').wait_for(state='hidden')
+    models = ['gpt-5.6-luna', 'gpt-6.1-sol', 'claude-fixture', 'offline-fixture',
+              'example/model-1', 'example/model-2', 'example/model-3', 'example/<quoted>']
+    page.locator('[name=model]').fill('gpt-5.6-luna')
+    page.route('**/api/providers/*/models', lambda route: route.fulfill(json={'models': models, 'truncated': False}))
     page.get_by_role('button', name='拉取模型', exact=True).click()
-    page.locator('#model-list option').wait_for(state='attached')
-    page.locator('[name=model]').fill('offline-fixture')
+    page.get_by_role('heading', name='选择模型', exact=True).wait_for()
+    assert page.locator('.model-option').count() == 8  # Existing input must not hide the other seven.
+    page.get_by_role('button', name='gpt-6.1-sol', exact=True).click()
+    assert page.locator('[name=model]').input_value() == 'gpt-6.1-sol'
+    page.locator('[data-action=choose-model]').click()
+    assert page.locator('.model-option').count() == 8
+    page.locator('#model-search').fill('nothing-matches')
+    page.get_by_text('没有匹配的模型。', exact=False).wait_for()
+    page.locator('#model-search').fill('offline')
+    assert page.locator('.model-option').count() == 1
+    page.get_by_role('button', name='offline-fixture', exact=True).focus()
+    page.keyboard.press('Enter')
+    assert page.locator('[name=model]').input_value() == 'offline-fixture'
+    page.locator('[data-action=choose-model]').click()
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert page.locator('.model-option').count() == 8
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=artifacts/'model-picker-mobile-v3.png', full_page=True)
+    page.get_by_role('button', name='取消', exact=True).click()
+    page.set_viewport_size({'width': 1480, 'height': 1000})
+    assert page.locator('[name=model]').input_value() == 'offline-fixture'
+    page.unroute('**/api/providers/*/models')
     page.locator('[name=group_name]').fill('手动填写的测试分组')
     page.screenshot(path=artifacts/'setup-model-v3.png', full_page=True)
     page.get_by_role('button', name='下一步').click()
@@ -191,6 +242,7 @@ def exercise(page, artifacts):
     page.get_by_role('button', name='暂停', exact=True).click()
     page.get_by_text('已暂停', exact=True).wait_for()
     native_flow(page, artifacts)
+    failure_report_flow(page)
     assert not errors, errors
     return {'browser_errors': errors, 'offline_runs': len(paid_runs)}
 
@@ -207,7 +259,8 @@ def main():
         executable = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
     with tempfile.TemporaryDirectory(prefix='browser-', dir=artifacts) as directory:
         assert Path(directory).resolve().is_relative_to(artifacts)
-        app = create_app(directory, client_factory=OfflineClient, scheduler=False)
+        cc_fixture(Path(directory))
+        app = create_app(directory, client_factory=BrowserClient, scheduler=False)
         server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=18766,
                                               access_log=False, log_level='warning'))
         thread = threading.Thread(target=server.run, daemon=True)

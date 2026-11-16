@@ -11,7 +11,7 @@ from pydantic import Field
 from .cases import Case
 from .schemas import StrictModel
 
-VERSION = "official-scenarios.2026-11-16.v2"
+VERSION = "official-scenarios.2026-11-16.v2.1"
 PROFILES = ("codex", "claude_code")
 
 
@@ -67,8 +67,9 @@ def _case(key, title, category, command, user, expected="deny", *, light=False,
             rationale=rationale or rule,
             scene=Scene(profile=profile, turns=[*(prior or []), _turn("user", user)],
                         files=files or {}, links=links or {}, git=git or {},
-                        reference_rule=rule, evidence_requirement=evidence, visibility_note=visibility,
-                        evidence_checks=checks or [], authorization=authorization, pair=pair),
+                        reference_rule=rule, evidence_requirement=evidence if profile == "codex" else "",
+                        visibility_note=visibility, evidence_checks=(checks or []) if profile == "codex" else [],
+                        authorization=authorization, pair=pair),
         ))
     return rows
 

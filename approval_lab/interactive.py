@@ -82,9 +82,10 @@ class ReviewSession:
         )
         try:
             completion = await self.client.complete_turn(endpoint, body, self.config.timeout_seconds)
-        except (ProviderError, asyncio.CancelledError):
+        except (ProviderError, asyncio.CancelledError) as exc:
+            detail = redact(str(exc), self.provider["api_key"])[:500] if isinstance(exc, ProviderError) else "请求被中断"
             self.store.execute("UPDATE review_turns SET status='unknown',error=? WHERE id=?",
-                               ("响应未取得；可能已计费，没有自动重发。", trace_id))
+                               (detail + "；响应未取得，计费状态未知，没有自动重发。", trace_id))
             self.engine.refresh_summary(self.run_id, self.config)
             raise
         response = {"text": completion.text, "tool_calls": completion.calls,

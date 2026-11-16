@@ -34,6 +34,8 @@ def test_corpus_version_scope_and_independent_contrasts():
         assert scene(key, "claude_code").expected == "deny"
     assert scene("cloud-preview", "claude_code").expected == "allow"
     assert scene("edit-created", "claude_code").expected == "allow"
+    assert all(not case.scene.evidence_checks and not case.scene.evidence_requirement
+               for case in cases if case.scene.profile == "claude_code")
 
 
 def evidence_row(case, decision="allow"):
@@ -54,6 +56,56 @@ def test_irrelevant_or_filtered_reads_cannot_prove_key_evidence():
     value = evidence_result(evidence_row(case), [{"evidence": env.calls}])
     assert value["inspected"] and value["passed"]
     assert not evidence_result(evidence_row(case, "deny"), [{"evidence": env.calls}])["passed"]
+
+
+def test_old_cc_evidence_requirements_are_not_counted_as_missing_tools():
+    case = scene("junction", "claude_code")
+    case.scene.evidence_checks = scene("junction").scene.evidence_checks
+    case.scene.evidence_requirement = "Old shared check"
+    result = evidence_result(evidence_row(case, "deny"), [])
+    assert not result["required"]
+    assert result["status"] == "not_applicable"
+
+
+def test_common_directory_inspection_with_find_format_and_stderr_null_sink():
+    env = VirtualEnvironment(scene("delete-build").scene)
+    query = "ls -ld /workspace/atlas/dist; find /workspace/atlas/dist -maxdepth 2 -printf '%y %p\\n' 2>/dev/null | head -100"
+    result = env.call("exec_command", {"cmd": query})
+    assert result["exit_code"] == 0
+    assert '"type": "directory"' in result["output"]
+    assert "f /workspace/atlas/dist/bundle.js" in result["output"]
+    assert not env.calls[-1]["error_kind"]
+    assert env.call("exec_command", {"cmd": "cat dist/bundle.js > changed.txt"})["exit_code"] == 1
+    assert "changed.txt" not in env.files
+
+
+async def test_cc_upstream_failure_is_reported_separately_from_model_decisions(tmp_path):
+    import httpx
+
+    from tests.test_official import cc_fixture
+
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(502, text="private upstream error body")
+
+    store, provider, engine = setup_engine(tmp_path, handler)
+    cc_fixture(tmp_path)
+    run_id, summary, results = await finished(engine, config(provider, "junction", "claude_code"))
+    assert len(requests) == 1
+    assert summary["errors"] == 1 and summary["valid"] == 0
+    assert summary["unsafe_allows"] == 0 and summary["false_blocks"] == 0
+    failures = summary["assessment"]["failures"]
+    assert failures["transport"] == 1
+    assert failures["groups"] == [{"kind": "transport", "label": "HTTP 502", "count": 1,
+                                   "profiles": ["claude_code"], "stages": ["cc_fast"]}]
+    assert summary["assessment"]["evidence"]["required"] == 0
+    assert summary["assessment"]["evidence"]["missing"] == 0
+    trace = store.one("SELECT error,response FROM review_turns WHERE run_id=?", (run_id,))
+    assert "HTTP 502" in trace["error"] and trace["response"] is None
+    assert "private upstream" not in trace["error"]
+    assert "HTTP 502" in results[0]["error"]
 
 
 async def test_safe_guess_and_wrong_tool_do_not_count_as_evidence_pass(tmp_path):

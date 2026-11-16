@@ -3,6 +3,7 @@ import {historyTable} from './reports.js';
 
 export function createSetup(ctx) {
   const {state,api,modal,closeModal}=ctx;
+  let pickerProvider=null,modelQuery='';
   function selectedNative() {
     const c=state.draft,protocol=state.providers.find(p=>p.id===c.provider_id)?.protocol;
     return state.nativeRecords.filter(r=>r.protocol===protocol&&r.label_reviewed&&r.expected&&
@@ -26,7 +27,28 @@ export function createSetup(ctx) {
   function stageOne() {
     const c=state.draft;
     if(!state.providers.length)return `<div class="setup-panel"><h2>先连接一家中转站</h2><p>每家保存一个测试 Key 即可，以后更换分组时直接在中转站后台切换。</p>${empty('添加你的第一个连接','需要 API 根地址和测试 Key；Key 会在本机加密保存。','<button type="button" class="primary" data-action="add-provider">添加中转站</button>')}</div>`;
-    return `<div class="setup-panel"><h2>这次测哪个模型？</h2><p>选择已保存的连接，再填写模型和本次分组。</p><div class="form-grid"><div class="span-2"><div class="field-heading"><label for="provider-select">中转连接</label><button type="button" class="text-button" data-action="add-provider">＋ 添加连接</button></div><select id="provider-select" name="provider_id" required>${option('','选择中转站',c.provider_id)}${state.providers.map(p=>option(p.id,p.name,c.provider_id)).join('')}</select></div><label class="field span-2">模型 ID<div class="input-with-button"><input name="model" value="${esc(c.model)}" placeholder="拉取后选择，也可以直接输入" list="model-list" required maxlength="200" autocomplete="off"><button type="button" data-action="fetch-models">拉取模型</button></div><datalist id="model-list">${(state.models[c.provider_id]||[]).map(x=>`<option value="${esc(x)}"></option>`).join('')}</datalist></label><label class="field span-2">本次分组名称<input name="group_name" value="${esc(c.group_name)}" placeholder="例如：自营号池 / 优惠分组" required maxlength="100"><small>名称用于记录。请在中转站后台把这个 Key 切到对应的实际分组。</small></label></div></div>`;
+    return `<div class="setup-panel"><h2>这次测哪个模型？</h2><p>选择已保存的连接，再填写模型和本次分组。</p><div class="form-grid"><div class="span-2"><div class="field-heading"><label for="provider-select">中转连接</label><button type="button" class="text-button" data-action="add-provider">＋ 添加连接</button></div><select id="provider-select" name="provider_id" required>${option('','选择中转站',c.provider_id)}${state.providers.map(p=>option(p.id,p.name,c.provider_id)).join('')}</select></div><div class="field span-2"><label for="model-id">模型 ID</label><div class="input-with-button"><input id="model-id" name="model" value="${esc(c.model)}" placeholder="拉取后选择，也可以直接输入" required maxlength="200" autocomplete="off"><button type="button" data-action="fetch-models">拉取模型</button></div><div class="model-list-status" id="model-list-status">${modelStatus()}</div></div><label class="field span-2">本次分组名称<input name="group_name" value="${esc(c.group_name)}" placeholder="例如：自营号池 / 优惠分组" required maxlength="100"><small>名称用于记录。请在中转站后台把这个 Key 切到对应的实际分组。</small></label></div></div>`;
+  }
+  function modelStatus() {
+    const models=state.models[state.draft.provider_id];
+    return models?.length?`<span>已读取 ${fmt(models.length)} 个模型</span><button type="button" class="text-button" data-action="choose-model">选择模型 →</button>`:models?'<span>当前分组没有返回模型，可手填模型 ID 或切换分组后重新拉取。</span>':'<span>可直接输入模型 ID，或拉取列表后选择。</span>';
+  }
+  function modelOptions() {
+    const all=state.models[pickerProvider]||[],rows=all.map((id,index)=>({id,index})).filter(x=>x.id.toLowerCase().includes(modelQuery.toLowerCase().trim()));
+    return `<div class="model-picker-count">${modelQuery?`匹配 ${fmt(rows.length)} / ${fmt(all.length)} 个模型`:`全部 ${fmt(all.length)} 个模型`}${rows.length>200?' · 显示前 200 个，请搜索缩小范围':''}</div><div class="model-options" aria-label="模型列表">${rows.slice(0,200).map(({id,index})=>`<button type="button" data-action="select-model" data-index="${index}" class="model-option ${id===state.draft.model?'selected':''}"><span>${esc(id)}</span>${id===state.draft.model?'<small>当前模型 ✓</small>':''}</button>`).join('')||'<p class="model-empty">没有匹配的模型。可清空搜索，或关闭后手填模型 ID。</p>'}</div>`;
+  }
+  function chooseModel() {
+    save();pickerProvider=state.draft.provider_id;modelQuery='';
+    modal('选择模型',`<div class="modal-body"><p class="modal-note">${esc(state.providers.find(p=>p.id===pickerProvider)?.name)} · 当前 Key 返回的模型列表</p><label class="field">搜索模型<input id="model-search" type="search" placeholder="输入模型名称，留空查看全部" autocomplete="off"></label><div id="model-picker-results">${modelOptions()}</div></div>`,`<div class="modal-actions"><button type="button" data-action="close-modal">取消</button></div>`);
+    $('#model-search').focus();
+  }
+  function selectModel(button) {
+    const model=state.models[pickerProvider]?.[Number(button.dataset.index)];
+    if(!model||state.draft.provider_id!==pickerProvider)return;
+    state.draft.model=model;
+    const field=$('#run-form')?.elements.model;
+    if(field)field.value=model;
+    save();closeModal();field?.focus();
   }
   function choice(name,id,title,description,sub,current) {
     return `<label class="choice"><input type="radio" name="${name}" value="${id}" ${id===current?'checked':''}><strong>${title}</strong><small>${description}</small>${sub?`<div class="choice-count">${sub}</div>`:''}</label>`;
@@ -58,8 +80,8 @@ export function createSetup(ctx) {
     if(!id)return toast('先选择中转站。',true);
     button.disabled=true;button.textContent='拉取中…';
     try{const data=await api(`/providers/${id}/models`,{method:'POST'});state.models[id]=data.models;
-      if($('#model-list')&&Number($('#run-form').elements.provider_id.value)===id){$('#model-list').innerHTML=data.models.map(x=>`<option value="${esc(x)}"></option>`).join('');$('#run-form').elements.model.focus();}
-      toast(`已读取 ${data.models.length} 个模型，可在输入框选择或搜索。`);
+      if($('#model-list-status')&&state.draft.provider_id===id){$('#model-list-status').innerHTML=modelStatus();chooseModel();}
+      if(data.truncated)toast('模型列表未全部返回，可搜索已读取的模型或手填 ID。');
     }finally{button.disabled=false;button.textContent='拉取模型';}
   }
   function advanced() {
@@ -72,6 +94,7 @@ export function createSetup(ctx) {
     save();closeModal();render();
   }
   function input(event) {
+    if(event.type==='input'&&event.target.id==='model-search'){modelQuery=event.target.value;$('#model-picker-results').innerHTML=modelOptions();return;}
     if(!event.target.closest('#run-form'))return;
     save();
     if(event.type==='change'&&['official_profile','official_scope','native_scope','native_origin'].includes(event.target.name)){
@@ -79,13 +102,13 @@ export function createSetup(ctx) {
       if(event.target.name==='official_scope')state.draft.repeats=state.draft.official_scope==='regression'?3:1;
       render();save();
     }
-    if(event.type==='change'&&event.target.name==='provider_id')$('#model-list').innerHTML=(state.models[state.draft.provider_id]||[]).map(x=>`<option value="${esc(x)}"></option>`).join('');
+    if(event.type==='change'&&event.target.name==='provider_id')$('#model-list-status').innerHTML=modelStatus();
   }
   const actions={
     'wizard-next':()=>{if(canAdvance()){state.setupStep++;render();}},
     'wizard-back':()=>{save();state.setupStep--;render();},
     'wizard-step':button=>{const target=Number(button.dataset.id);if(target<=state.setupStep||canAdvance()){state.setupStep=target;render();}},
-    'fetch-models':fetchModels,'advanced-settings':advanced,
+    'fetch-models':fetchModels,'choose-model':chooseModel,'select-model':selectModel,'advanced-settings':advanced,
     'clear-case-selection':()=>{save();state.draft.official_case_ids=null;render();save();},
   };
   return {render,save,count,canAdvance,saveAdvanced,input,actions};

@@ -50,6 +50,13 @@ nav a:hover {background:#f5f6fa} nav a.active {color:var(--accent);background:va
 .field small {font-size:12px;font-weight:400;color:var(--muted);line-height:1.8} .span-2 {grid-column:span 2}
 .input-with-button {display:flex;gap:10px} .input-with-button input,.input-with-button select {flex:1;min-width:0} .input-with-button button {white-space:nowrap}
 .field-heading {display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;font-size:13px;font-weight:500}
+.model-list-status {display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;font-size:12px;color:var(--muted);font-weight:400}
+.model-list-status .text-button {font-size:12px;padding:0}
+.model-picker-count {font-size:12px;color:var(--muted);margin:16px 0 10px}
+.model-options {max-height:360px;overflow-y:auto;border:1px solid var(--line);border-radius:10px}
+.model-option {display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;border:0;border-radius:0;border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;font-size:13px}
+.model-option:last-child {border-bottom:0}.model-option span {overflow-wrap:anywhere;min-width:0}.model-option small {white-space:nowrap;color:var(--accent);font-size:11px}
+.model-option.selected {background:var(--accent-light);color:var(--accent)}.model-option:hover {background:#f4f4ff}.model-empty {font-size:13px;color:var(--muted);padding:16px;margin:0}
 .choice-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px} .choice {position:relative;padding:21px 17px;border:1px solid var(--line);border-radius:12px;cursor:pointer;display:block;min-width:0}
 .choice:has(input:checked) {border-color:#8279fa;background:#f7f7ff;box-shadow:0 0 0 1px #8279fa33} .choice input {position:absolute;top:18px;right:14px;width:15px;min-height:15px}
 .choice strong {display:block;font-size:14px;padding-right:20px;margin-bottom:10px} .choice small {display:block;color:var(--muted);font-size:12px;line-height:1.8} .choice .choice-count {margin-top:14px;font-size:12px;color:var(--accent)}

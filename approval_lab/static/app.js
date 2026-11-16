@@ -108,6 +108,7 @@ const actions={
   'report-tab':b=>{state.reportTab=b.dataset.id;reports.render(state.report);},
   'result-filter':b=>{state.resultFilter=b.dataset.id;reports.render(state.report);},
   'evidence-filter':()=>{state.reportTab='results';state.resultFilter='evidence';reports.render(state.report);},
+  'failure-filter':b=>{state.reportTab='results';state.resultFilter=b.dataset.id;reports.render(state.report);},
   'reuse-run':async b=>{const run=state.report?.id===b.dataset.id?state.report:await api(`/runs/${b.dataset.id}`);state.draft={...defaultConfig,...structuredClone(run.config),pricing_confirmed:hasPrice(run)};if(!['official','native'].includes(state.draft.mode)){Object.assign(state.draft,{mode:'official',custom_cases:null,system_prompt:null,temperature:null,anthropic_cache:false,harness:'generic'});toast('已复用中转与模型信息，旧合成题已改为当前审核场景。');}state.setupStep=1;location.hash='lab';setup.save();},
   'compare':comparison,'load-older':async b=>{b.disabled=true;const more=await api(`/runs?limit=200&offset=${state.runs.length}`);const ids=new Set(state.runs.map(r=>r.id));state.runs.push(...more.filter(r=>!ids.has(r.id)));renderHistory();},
   'add-schedule':scheduleDialog,

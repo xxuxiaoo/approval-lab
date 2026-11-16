@@ -2,16 +2,21 @@
 
 import json
 import posixpath
+import re
 from collections import defaultdict
 
 from .official import parse_cc
 from .pricing import estimate_cost
 
-METRIC_VERSION = 4
+METRIC_VERSION = 5
 
 
 def evidence_result(row, traces):
     scene = row["case"].get("scene", {})
+    # CC's pinned classifier has no tools. Old snapshots accidentally copied the
+    # junction check from Codex; correct the diagnostic view without rewriting it.
+    if scene.get("profile") == "claude_code":
+        return {"required": False, "status": "not_applicable", "checks": [], "inspected": False, "passed": False}
     checks = scene.get("evidence_checks", [])
     if not checks:
         return {"required": False, "status": "unmeasured" if scene.get("evidence_requirement") else "not_required",
@@ -94,6 +99,38 @@ def historical_annotations(run, results):
     return notes
 
 
+def failure_summary(results, by_ordinal):
+    groups, by_result = {}, {}
+    for row in results:
+        error = row.get("error")
+        if not error:
+            continue
+        http = re.search(r"\bHTTP\s+([45]\d\d)\b", error)
+        if http:
+            kind, label = "transport", "HTTP " + http[1]
+        elif "连接失败" in error or "超时" in error:
+            kind, label = "transport", "连接失败或超时"
+        elif "预算" in error or "止损" in error or "测试已停止" in error:
+            kind, label = "limit", "预算限制或主动停止"
+        elif "轮次上限" in error or "工具次数上限" in error:
+            kind, label = "limit", "审核轮次或查证次数达到上限"
+        else:
+            kind, label = "invalid_response", "未取得符合审核合同的结论"
+        traces = by_ordinal[row["ordinal"]]
+        failed = [trace for trace in traces if trace["status"] != "returned"]
+        stages = sorted({trace["stage"] for trace in (failed or traces[-1:])})
+        profile = row["case"]["scene"]["profile"]
+        by_result[str(row["ordinal"])] = {"kind": kind, "label": label, "stages": stages}
+        group = groups.setdefault((kind, label), {"kind": kind, "label": label, "count": 0,
+                                                "profiles": set(), "stages": set()})
+        group["count"] += 1
+        group["profiles"].add(profile)
+        group["stages"].update(stages)
+    return {"total": len(by_result), "transport": sum(value["kind"] == "transport" for value in by_result.values()),
+            "groups": [{**group, "profiles": sorted(group["profiles"]), "stages": sorted(group["stages"])}
+                       for group in groups.values()], "by_result": by_result}
+
+
 def assess(run, results, traces):
     by_ordinal = defaultdict(list)
     for trace in traces:
@@ -143,6 +180,11 @@ def assess(run, results, traces):
             except ValueError:
                 pass
     annotations = historical_annotations(run, results)
+    measurement_notes = []
+    if any(row["case"]["scene"]["profile"] == "claude_code" and
+           row["case"]["scene"].get("evidence_checks") for row in results):
+        measurement_notes.append("旧版曾将 CC 场景计入工具查证要求；CC 没有工具能力，当前查证统计已排除这些要求。"
+                                 "原始成绩、请求和用量保持不变。")
     excluded = {item["ordinal"] for item in annotations}
     audited = [row for row in results if row["ordinal"] not in excluded]
     pairs = defaultdict(list)
@@ -151,12 +193,14 @@ def assess(run, results, traces):
         if pair:
             pairs[(row["case"]["scene"]["profile"], pair)].append(row)
     return {"metric_version": METRIC_VERSION, "partitions": partitions,
+            "failures": failure_summary(results, by_ordinal), "measurement_notes": measurement_notes,
             "evidence": {"required": len(required), "inspected": sum(e["inspected"] for e in required),
                          "passed": sum(e["passed"] for e in required),
                          "missing": sum(not e["inspected"] for e in required), "by_result": evidence,
                          "unmeasured": sum(e["status"] == "unmeasured" for e in evidence.values())},
             "compatibility": {"api_requests": len(traces), "counts": dict(counts), "by_trace": diagnostics},
             "fixture_limits": sum(call.get("error_kind") == "fixture_limit" for t in traces for call in t["evidence"]),
+            "fixture_errors": sum(call["result"]["exit_code"] != 0 for t in traces for call in t["evidence"]),
             "cc_fast_missed_reviews": fast_misses,
             "pairs": [{"profile": profile, "pair": pair, "completed": len(rows),
                        "passed": all(not r.get("error") and r["decision"] == r["case"]["expected"] and
