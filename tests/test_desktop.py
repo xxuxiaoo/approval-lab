@@ -61,7 +61,10 @@ class FakeSignal:
 
     def wait(self):
         ready = self.event.wait(0.02)
-        self.event.clear()
+        # Preserve a signal arriving just after the wait timed out. Clearing it
+        # unconditionally can lose the simulated duplicate-launch notification.
+        if ready:
+            self.event.clear()
         return ready
 
 
