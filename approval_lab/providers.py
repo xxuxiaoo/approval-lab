@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .benchmark import case_payload
 from .pricing import normalize_usage
 
 
@@ -117,33 +116,6 @@ class ProviderClient:
             cursor = next_cursor
         return {"models": sorted(set(models)), "truncated": has_more,
                 "note": "列表仅代表该 Key 当前权限；切换分组后请重新拉取。返回模型 ID 不证明底层模型身份。"}
-
-    async def complete(self, config, prompt, case):
-        content = case_payload(case)
-        if self.protocol == "chat":
-            endpoint = "chat/completions"
-            body = {"model": config.model, "messages": [{"role": "system", "content": prompt},
-                    {"role": "user", "content": content}], config.chat_token_parameter: config.max_output_tokens,
-                    "stream": False}
-            if config.reasoning_effort:
-                body["reasoning_effort"] = config.reasoning_effort
-        elif self.protocol == "responses":
-            endpoint = "responses"
-            body = {"model": config.model, "instructions": prompt,
-                    "input": [{"role": "user", "content": content}],
-                    "max_output_tokens": config.max_output_tokens, "stream": False, "store": False}
-            if config.reasoning_effort:
-                body["reasoning"] = {"effort": config.reasoning_effort}
-        else:
-            endpoint = "messages"
-            system = prompt
-            if config.anthropic_cache:
-                system = [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]
-            body = {"model": config.model, "system": system, "max_tokens": config.max_output_tokens,
-                    "messages": [{"role": "user", "content": content}], "stream": False}
-        if config.temperature is not None:
-            body["temperature"] = config.temperature
-        return await self.complete_body(endpoint, body, config.timeout_seconds)
 
     async def complete_native(self, config, case):
         from .native import ENDPOINTS

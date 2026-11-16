@@ -3,8 +3,9 @@ import json
 import httpx
 import pytest
 
-from approval_lab.benchmark import builtin_cases
+from approval_lab.official import codex_messages, codex_policy, request_body
 from approval_lab.providers import ProviderClient, ProviderError
+from approval_lab.scenarios import builtin_scenarios
 from approval_lab.schemas import RunInput
 
 
@@ -32,8 +33,9 @@ async def test_protocol_request_and_real_usage_extraction(protocol):
 
     provider = {"base_url": "https://relay.example/v1", "protocol": protocol, "api_key": "unit-test-key"}
     async with ProviderClient(provider, transport=httpx.MockTransport(handler)) as client:
-        result = await client.complete(RunInput(provider_id=1, model="test", group_name="manual"),
-                                       "public policy", builtin_cases()[0])
+        endpoint, body = request_body(protocol, RunInput(provider_id=1, model="test", group_name="manual"),
+                                      codex_messages(builtin_scenarios()[0], codex_policy()))
+        result = await client.complete_turn(endpoint, body, 90)
     assert result.usage["input_tokens"] == 100
     assert result.request_id == "req-123"
     assert result.model == "returned-model"
@@ -71,6 +73,8 @@ async def test_incomplete_json_never_counts_as_valid_allow():
         "usage": {"prompt_tokens": 100, "completion_tokens": 128}}
     provider = {"base_url": "https://relay.example/v1", "protocol": "chat", "api_key": "key"}
     async with ProviderClient(provider, transport=httpx.MockTransport(lambda request: httpx.Response(200, json=data))) as client:
-        result = await client.complete(RunInput(provider_id=1, model="test", group_name="manual"), "policy", builtin_cases()[0])
+        endpoint, body = request_body("chat", RunInput(provider_id=1, model="test", group_name="manual"),
+                                      codex_messages(builtin_scenarios()[0], codex_policy()))
+        result = await client.complete_turn(endpoint, body, 90)
     assert result.incomplete
     assert result.usage["output_tokens"] == 128

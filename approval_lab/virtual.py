@@ -12,6 +12,10 @@ class EvidenceError(ValueError):
     pass
 
 
+class FixtureLimit(EvidenceError):
+    """A harness limitation, rather than evidence of a model judgment failure."""
+
+
 class VirtualEnvironment:
     def __init__(self, scene):
         self.cwd = scene.cwd
@@ -19,6 +23,7 @@ class VirtualEnvironment:
         self.links = {self.absolute(path): self.absolute(target) for path, target in scene.links.items()}
         self.git = scene.git
         self.calls = []
+        self.observations = []
 
     def absolute(self, path, cwd=None):
         path = str(path).replace("\\", "/")
@@ -44,22 +49,28 @@ class VirtualEnvironment:
         path = self.resolve(path, cwd)
         if path not in self.files:
             raise EvidenceError(f"No such fixture file: {path}; no host files were read")
-        return self.files[path]
+        content = self.files[path]
+        self.observations.extend({"kind": "content", "target": path, "value": line}
+                                 for line in content.splitlines() if line.strip())
+        return content
 
     def inspect(self, path, cwd=None):
         literal, resolved = self.absolute(path, cwd), self.resolve(path, cwd)
         children = [name for name in self.files if name.startswith(resolved.rstrip("/") + "/")]
         if resolved not in self.files and not children and literal not in self.links:
             raise EvidenceError(f"No such fixture path: {literal}")
+        self.observations.append({"kind": "path", "target": literal, "value": resolved})
         return {"path": literal, "resolved_path": resolved, "is_symlink": literal in self.links,
                 "link_target": self.links.get(literal), "type": "file" if resolved in self.files else "directory",
                 "size": len(self.files.get(resolved, "").encode()), "children": sorted(children)[:100]}
 
     def call(self, name, arguments):
         short = name.rsplit(".", 1)[-1]
+        self.observations = []
+        error_kind = None
         try:
             if short == "write_stdin":
-                raise EvidenceError("No running fixture session; all read-only fixture queries finish synchronously")
+                raise FixtureLimit("No running fixture session; all read-only fixture queries finish synchronously")
             if short != "exec_command":
                 raise EvidenceError(f"Unknown fixture tool: {name}")
             if any(key in arguments for key in ("sandbox_permissions", "additional_permissions", "prefix_rule")):
@@ -73,16 +84,33 @@ class VirtualEnvironment:
             if len(output) > budget:
                 output = output[:budget] + "\n<truncated reason=fixture-output-budget />"
             result = {"wall_time_seconds": 0, "exit_code": 0, "output": output}
-        except (EvidenceError, ValueError, TypeError, KeyError, re.error) as exc:
+        except (EvidenceError, ValueError, TypeError, KeyError, SyntaxError, re.error) as exc:
+            error_kind = "fixture_limit" if isinstance(exc, FixtureLimit) else "invalid_query"
             result = {"wall_time_seconds": 0, "exit_code": 1, "output": f"Fixture query error: {exc}"[:2000]}
-        self.calls.append({"name": name, "arguments": arguments, "result": result})
+        # Credit only observations that actually reached the model, after pipes/truncation.
+        visible = [item for item in self.observations if item["value"] in result["output"]]
+        self.calls.append({"name": name, "arguments": arguments, "result": result,
+                           "observations": visible if result["exit_code"] == 0 else [], "error_kind": error_kind})
         return result
 
     def query(self, command, cwd):
         # Explicitly reject shell execution semantics rather than pretending to execute.
         if re.search(r"`|\$\(|\$\{|\beval\b|\bexec\b|[<>]", command):
             raise EvidenceError("Unsupported shell expansion/execution/redirection; use cat, ls, stat, readlink, realpath, rg or git")
-        parts = re.split(r"\s*(?:&&|;)\s*", command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+        if any(token in ("&", "||", ">", ">>", "<", "<<") for token in tokens):
+            raise FixtureLimit("Only sequential read queries and bounded read-only pipelines are supported")
+        parts, current = [], []
+        for token in tokens:
+            if token in ("&&", ";"):
+                parts.append(shlex.join(current))
+                current = []
+            else:
+                current.append(token)
+        parts.append(shlex.join(current))
         if len(parts) > 1:
             if len(parts) > 12:
                 raise EvidenceError("Too many fixture queries")
@@ -93,9 +121,22 @@ class VirtualEnvironment:
                 elif part.strip():
                     outputs.append(self.query(part.strip(), cwd))
             return "\n".join(outputs)
-        if "|" in command:
-            raise EvidenceError("Pipelines are not implemented in this fixture interpreter; issue separate read-only queries")
-        args = shlex.split(command)
+        if "|" in tokens:
+            stages, current = [], []
+            for token in tokens:
+                if token == "|":
+                    stages.append(current)
+                    current = []
+                else:
+                    current.append(token)
+            stages.append(current)
+            if len(stages) > 6 or any(not stage for stage in stages):
+                raise FixtureLimit("At most six nonempty read-only pipeline stages are supported")
+            output = self.query(shlex.join(stages[0]), cwd)
+            for stage in stages[1:]:
+                output = self.filter_output(stage, output)
+            return output
+        args = tokens
         if not args:
             raise EvidenceError("Empty command")
         tool = args[0].lower()
@@ -111,13 +152,50 @@ class VirtualEnvironment:
             return "\n".join(self.read(path, cwd) for path in paths)
         if tool in ("readlink", "realpath", "resolve-path"):
             path = next((x for x in rest if not x.startswith("-")), ".")
-            return self.resolve(path, cwd)
+            resolved = self.resolve(path, cwd)
+            self.observations.append({"kind": "path", "target": self.absolute(path, cwd), "value": resolved})
+            return resolved
         if tool in ("stat", "get-item", "test-path"):
             path = next((x for x in reversed(rest) if not x.startswith("-")), ".")
             if tool == "test-path":
                 return str(self.exists(self.absolute(path, cwd))).lower()
             return json.dumps(self.inspect(path, cwd), ensure_ascii=False)
-        if tool in ("ls", "find", "get-childitem", "dir"):
+        if tool == "find":
+            root = self.resolve(rest[0] if rest and not rest[0].startswith("-") else ".", cwd)
+            flags = rest[1:] if rest and not rest[0].startswith("-") else rest
+            depth, name_filter, type_filter = 100, "*", None
+            index = 0
+            while index < len(flags):
+                flag = flags[index]
+                if flag == "-print":
+                    index += 1
+                    continue
+                if flag not in ("-maxdepth", "-name", "-type") or index + 1 >= len(flags):
+                    raise FixtureLimit("Supported find flags: -maxdepth N, -name GLOB, -type f/d/l, -print")
+                value = flags[index + 1]
+                if flag == "-maxdepth":
+                    depth = int(value)
+                elif flag == "-name":
+                    name_filter = value
+                else:
+                    type_filter = value
+                index += 2
+            paths = set(self.files) | set(self.links)
+            for path in self.files:
+                parent = posixpath.dirname(path)
+                while parent != "/":
+                    paths.add(parent)
+                    parent = posixpath.dirname(parent)
+            found = []
+            for path in sorted(paths):
+                relative = posixpath.relpath(path, root)
+                if relative == ".." or relative.startswith("../") or (0 if relative == "." else len(relative.split("/"))) > depth:
+                    continue
+                kind = "l" if path in self.links else "f" if path in self.files else "d"
+                if (type_filter is None or type_filter == kind) and fnmatch.fnmatch(posixpath.basename(path), name_filter):
+                    found.append(path)
+            return "\n".join(found)
+        if tool in ("ls", "get-childitem", "dir"):
             paths = [x for x in rest if not x.startswith("-")]
             root = self.resolve(paths[0] if paths else ".", cwd)
             # ls -ld must show the link itself as well as its resolved target.
@@ -134,6 +212,11 @@ class VirtualEnvironment:
                 raise EvidenceError("Supported sed query: sed -n '1,160p' file")
             indices = [int(x) for x in values[0][:-1].split(",")]
             return "\n".join(self.read(values[1], cwd).splitlines()[indices[0]-1:indices[-1]])
+        if tool in ("head", "tail"):
+            paths = [x for i, x in enumerate(rest) if not x.startswith("-") and (i == 0 or rest[i-1] != "-n")]
+            if len(paths) != 1:
+                raise FixtureLimit("Supported head/tail query: head -n N file")
+            return self.filter_output([tool, *[x for x in rest if x != paths[0]]], self.read(paths[0], cwd))
         if tool in ("rg", "grep"):
             if "--files" in rest:
                 return "\n".join(sorted(self.files))
@@ -148,15 +231,17 @@ class VirtualEnvironment:
                     continue
                 for index, line in enumerate(content.splitlines(), 1):
                     if re.search(pattern, line, re.IGNORECASE if "-i" in rest else 0):
+                        self.observations.append({"kind": "content", "target": path, "value": line})
                         matches.append(f"{path}:{index}:{line}")
             return "\n".join(matches) or "(no fixture matches)"
         if tool == "git":
             key = " ".join(rest)
             if key in self.git:
+                self.observations.append({"kind": "git", "target": key, "value": self.git[key]})
                 return self.git[key]
             if key in ("status", "status --short", "diff", "diff --stat", "log -5 --oneline", "branch --show-current", "remote -v"):
                 raise EvidenceError(f"No git evidence supplied for {key}; absence does not establish a clean/trusted repository")
-            raise EvidenceError("Only explicitly supplied read-only git queries are supported")
+            raise FixtureLimit("Only explicitly supplied read-only git queries are supported")
         if tool in ("python", "python3") and len(rest) == 2 and rest[0] == "-c":
             # Parse a small useful read pattern; never eval/exec even a restricted string.
             tree = ast.parse(rest[1])
@@ -177,5 +262,30 @@ class VirtualEnvironment:
                         if node.func.attr == "resolve":
                             return self.resolve(path, cwd)
                         return str(self.exists(self.absolute(path, cwd)))
-            raise EvidenceError("Supported Python fixture query: print(Path('literal').read_text()/resolve()/exists())")
-        raise EvidenceError(f"Unsupported fixture query {tool!r}; no command was executed. Use cat/ls/stat/readlink/realpath/rg/git.")
+            raise FixtureLimit("Supported Python fixture query: print(Path('literal').read_text()/resolve()/exists())")
+        raise FixtureLimit(f"Unsupported fixture query {tool!r}; no command was executed. Use cat/ls/stat/readlink/realpath/rg/git.")
+
+    @staticmethod
+    def filter_output(args, text):
+        """Filters operate only on strings; a pipe can never launch a process."""
+        tool, rest = args[0], args[1:]
+        lines = text.splitlines()
+        if tool in ("head", "tail"):
+            if not rest:
+                count = 10
+            elif len(rest) == 1 and re.fullmatch(r"-\d+", rest[0]):
+                count = int(rest[0][1:])
+            elif len(rest) == 2 and rest[0] == "-n" and rest[1].isdigit():
+                count = int(rest[1])
+            else:
+                raise FixtureLimit("Pipeline head/tail supports -n N or -N")
+            if not 0 <= count <= 1000:
+                raise FixtureLimit("Pipeline line limit must be between 0 and 1000")
+            return "\n".join(lines[:count] if tool == "head" else lines[-count:] if count else [])
+        if tool in ("grep", "rg") and len(rest) in (1, 2) and (len(rest) == 1 or rest[0] in ("-i", "-n")):
+            flags = re.IGNORECASE if rest[0] == "-i" else 0
+            return "\n".join(line for line in lines if re.search(rest[-1], line, flags))
+        if tool == "sed" and len(rest) == 2 and rest[0] == "-n" and re.fullmatch(r"\d+(,\d+)?p", rest[1]):
+            bounds = [int(value) for value in rest[1][:-1].split(",")]
+            return "\n".join(lines[bounds[0]-1:bounds[-1]])
+        raise FixtureLimit("Only head/tail, grep/rg and sed -n line ranges are supported after a pipe")

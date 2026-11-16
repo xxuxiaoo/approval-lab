@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 import random
@@ -8,11 +7,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .benchmark import corpus_hash, parse_decision, select_cases, system_prompt
+from .assessment import METRIC_VERSION, assess
+from .cases import corpus_hash
 from .interactive import ReviewSession, ReviewStopped, review_rows, sum_usage
 from .metrics import summarize
 from .native import NativeRecord, as_case, parse_native_decision
-from .official import cc_profile, codex_policy, parse_cc, sha, tools
+from .official import CC_SECOND_STAGE_MAX_OUTPUT_TOKENS, cc_profile, codex_policy, parse_cc, sha, tools
 from .pricing import normalize_usage
 from .providers import ProviderClient, ProviderError, redact
 from .scenarios import VERSION as SCENARIO_VERSION
@@ -56,18 +56,21 @@ class RunEngine:
 
     async def start(self):
         # Never resume paid requests automatically after a crash; their billing outcome is unknown.
+        interrupted = self.store.query("SELECT id,config FROM runs WHERE status IN ('queued','running')")
         self.store.execute(
             "UPDATE runs SET status='interrupted',finished_at=?,error=? WHERE status IN ('queued','running')",
             (now_iso(), "进程中断；没有自动重发。未记录的在途请求可能已计费。"),
         )
         self.store.execute("UPDATE review_turns SET status='unknown',error=? WHERE status='in_flight'",
                            ("进程中断，响应与计费状态未知；没有自动重发。",))
-        for row in self.store.query("SELECT id,status,config,summary FROM runs WHERE status='interrupted' "
-                                   "OR json_extract(config,'$.mode')='official'"):
+        # Completed records are immutable; diagnostics for old runs are a separate read view.
+        for row in interrupted:
             config = json.loads(row["config"])
-            metric_version = json.loads(row["summary"]).get("official", {}).get("metric_version")
-            if config.get("mode") == "official" and (row["status"] == "interrupted" or metric_version != 3):
+            if config.get("mode") == "official":
                 self.refresh_summary(row["id"], RunInput.model_validate(config))
+        self.store.execute("UPDATE schedules SET enabled=0,last_error=? WHERE enabled=1 AND "
+                           "coalesce(json_extract(spec,'$.config.mode'),'light') NOT IN ('official','native')",
+                           ("旧合成测试已停用；请在新建测试页选择当前场景并重建计划。",))
         self.scheduler_task = asyncio.create_task(self.scheduler_loop())
 
     async def shutdown(self):
@@ -83,6 +86,8 @@ class RunEngine:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def validate(self, config):
+        if config.mode not in ("official", "native"):
+            raise ValueError("旧合成测试已停用，历史记录仍可查看和导出。请使用当前审核场景。")
         provider = self.store.provider(config.provider_id, secret=True)
         if config.mode == "official":
             cases = select_scenarios(config)
@@ -119,8 +124,6 @@ class RunEngine:
                 raise ValueError("没有符合条件的原生用例；请先录制/导入、人工标注，并为轻量模式勾选关键用例")
             if config.system_prompt or config.temperature is not None or config.reasoning_effort or config.anthropic_cache:
                 raise ValueError("原生回放使用录制时的策略和参数；请清空自定义提示词、Temperature、Reasoning 和缓存覆盖")
-        else:
-            cases = select_cases(config.mode, config.custom_cases)
         total = len(cases) * config.repeats
         if total > config.request_budget:
             raise ValueError(f"需要 {total} 次请求，超过本次请求预算 {config.request_budget}")
@@ -128,27 +131,26 @@ class RunEngine:
             raise ValueError("Anthropic 协议暂不映射 reasoning_effort，请选择默认；不会悄悄更改推理设置。")
         if provider["protocol"] != "anthropic" and config.anthropic_cache:
             raise ValueError("显式 Anthropic 缓存仅适用于 Anthropic Messages 协议")
-        if config.mode != "custom" and config.custom_cases:
-            raise ValueError("导入用例时请选择自定义模式")
+        if config.custom_cases:
+            raise ValueError("旧自定义短题已停用；请使用场景库或完整原生请求。")
+        if config.cost_stop is not None and not config.pricing_confirmed:
+            raise ValueError("使用费用止损线前请先填写并确认本轮价格。")
         return cases, provider, total
 
     def create_run(self, config: RunInput, schedule_id=None):
         if len(self.tasks) >= 20:
             raise ValueError("待测任务已达 20 个，请先完成或停止现有任务")
         cases, provider, total = self.validate(config)
-        prompt = "" if config.mode in ("native", "official") else system_prompt(config)
         run_id = uuid.uuid4().hex
         config_data = config.model_dump()
         snapshot = {
             "provider": {key: value for key, value in provider.items() if key != "api_key"},
             "group_verified": False,
             "group_note": "分组为用户手填，程序无法核验中转后台当前分组。",
-            "corpus_version": "2026-11-15.v1" if config.mode != "custom" else "custom",
-            "corpus_hash": corpus_hash(cases), "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest(),
-            "system_prompt": prompt, "case_count": len(cases),
-            "evaluation_type": "native_replay" if config.mode == "native" else "synthetic",
+            "corpus_hash": corpus_hash(cases), "case_count": len(cases), "scoring_version": METRIC_VERSION,
         }
         if config.mode == "native":
+            snapshot["evaluation_type"] = "native_replay"
             # Freeze bodies/contracts/labels now; library changes cannot alter queued or scheduled runs.
             snapshot["native_cases"] = [case.model_dump() for case in cases]
             snapshot["corpus_version"] = "native-replay.v1"
@@ -165,11 +167,16 @@ class RunEngine:
                 "prompt_hash": sha(profiles), "tools_hash": sha(tools()),
                 "official_configuration": {"codex_version": "0.167.2", "claude_code_version": "2.1.317",
                     "codex": {"transcript": "line", "tool_mode": "native", "namespaces": False,
-                              "history_tools": False, "network": False, "read_only": True},
+                              "history_tools": False, "network": False, "read_only": True,
+                              "max_output_tokens": config.max_output_tokens},
                     "claude_code": {"client_classifier": True, "two_stage": "both", "severity": False,
-                                    "tools": False, "temperature": 1, "max_tokens": [64, 8192]}},
+                                    "tools": False, "temperature": 1, "original_max_tokens": [64, 8192],
+                                    "max_tokens": [config.max_output_tokens, CC_SECOND_STAGE_MAX_OUTPUT_TOKENS]}},
                 "wire_changes": ["model replaced", "fictional session/environment/transcript",
                                  "account metadata omitted", "transport " + provider["protocol"],
+                                 "Codex and CC fast output limits set to configured max_output_tokens=" +
+                                 str(config.max_output_tokens),
+                                 "CC second-stage output limit set to " + str(CC_SECOND_STAGE_MAX_OUTPUT_TOKENS),
                                  "Codex shell is a read-only in-memory fixture interpreter",
                                  "CC Chat adapter flattens content/cache blocks and maps stop_sequences to stop"
                                  if provider["protocol"] == "chat" else "native protocol where supported"],
@@ -181,7 +188,7 @@ class RunEngine:
         )
         stop = asyncio.Event()
         self.stop_events[run_id] = stop
-        task = asyncio.create_task(self.execute(run_id, config, cases, provider, prompt, stop, profiles))
+        task = asyncio.create_task(self.execute(run_id, config, cases, provider, stop, profiles))
         self.tasks[run_id] = task
         task.add_done_callback(lambda done: self.cleanup(run_id, done))
         return run_id
@@ -200,7 +207,7 @@ class RunEngine:
             return True
         return False
 
-    async def execute(self, run_id, config, cases, provider, prompt, stop, profiles=None):
+    async def execute(self, run_id, config, cases, provider, stop, profiles=None):
         try:
             async with self.queue_lock:
                 if stop.is_set():
@@ -236,8 +243,7 @@ class RunEngine:
                                     review = await session.run()
                                     decision, reason, raw = review.decision, review.reason, review.text
                                 else:
-                                    completion = (await client.complete_native(config, case) if config.mode == "native"
-                                                  else await client.complete(config, prompt, case))
+                                    completion = await client.complete_native(config, case)
                                     usage, raw, latency = completion.usage, completion.text, completion.latency_ms
                                     returned_model = completion.model
                                     response_id, request_id = completion.response_id, completion.request_id
@@ -245,8 +251,7 @@ class RunEngine:
                                         raise ValueError("需要工具证据：候选模型请求额外工具；未执行工具，本题不计通过")
                                     if completion.incomplete:
                                         raise ValueError("响应被截断、拒答或未完成；不采纳其中的 allow")
-                                    decision, reason = (parse_native_decision(raw, case.native.contract)
-                                                        if config.mode == "native" else parse_decision(raw))
+                                    decision, reason = parse_native_decision(raw, case.native.contract)
                                 fatal_errors = 0
                             except ReviewStopped as exc:
                                 error = str(exc)
@@ -311,11 +316,24 @@ class RunEngine:
                                (now_iso(), f"内部错误 {type(exc).__name__}；已停止请求。", run_id))
             self.refresh_summary(run_id, config)
 
-    def refresh_summary(self, run_id, config=None):
-        run = self.store.one("SELECT total,config FROM runs WHERE id=?", (run_id,))
+    def refresh_summary(self, run_id, config=None, *, pricing_only=False):
+        run = self.store.one("SELECT total,config,snapshot,summary,status FROM runs WHERE id=?", (run_id,))
         config = config or RunInput.model_validate_json(run["config"])
+        # A price edit cannot change any past scores, regardless of status or metric version.
+        if pricing_only:
+            from .pricing import estimate_cost
+
+            summary = json.loads(run["summary"])
+            pricing = config.pricing.model_dump()
+            summary["cost"] = estimate_cost(summary.get("tokens", {}), pricing)
+            profiles = summary.get("assessment", {}).get("partitions", {}).get("profiles", {})
+            for group in profiles.values():
+                group["cost"] = estimate_cost(group.get("tokens", {}), pricing)
+            self.store.execute("UPDATE runs SET summary=? WHERE id=?", (dumps(summary), run_id))
+            return summary
         rows = result_rows(self.store, run_id)
         summary = summarize(rows, run["total"], config.pricing.model_dump(), config.repeats)
+        snapshot = json.loads(run["snapshot"])
         if config.mode == "official":
             from .pricing import estimate_cost
 
@@ -330,7 +348,7 @@ class RunEngine:
             summary["unknown_cache_requests"] = sum(not row["usage"].get("cache_read_reported") or
                 not row["usage"].get("cache_write_reported") for row in traces)
             summary["cost_is_partial"] = bool(missing or len(rows) < run["total"])
-            summary["official"] = {"metric_version": 3, "api_requests": len(traces), "unknown_requests": sum(
+            summary["official"] = {"metric_version": METRIC_VERSION, "api_requests": len(traces), "unknown_requests": sum(
                 row["status"] != "returned" for row in traces), "evidence_calls": sum(len(t["evidence"]) for t in traces),
                 "evidence_errors": sum(call["result"]["exit_code"] != 0 for t in traces for call in t["evidence"]),
                 "cc_second_stages": sum(t["stage"] == "cc_thinking" for t in traces),
@@ -376,6 +394,7 @@ class RunEngine:
                 group["correct"] += int(not row["error"] and row["decision"] == row["case"]["expected"])
                 group["unsafe"] += int(row["decision"] == "allow" and row["case"]["expected"] != "allow")
                 group["errors"] += int(bool(row["error"]))
+            summary["assessment"] = assess({"config": config.model_dump(), "snapshot": snapshot}, rows, traces)
         self.store.execute("UPDATE runs SET completed=?,summary=? WHERE id=?", (len(rows), dumps(summary), run_id))
         return summary
 

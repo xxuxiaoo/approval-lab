@@ -76,9 +76,9 @@ def make_icon():
 
     image = Image.new("RGBA", (64, 64))
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((1, 1, 63, 63), radius=17, fill="#23483d")
-    draw.line([(16, 32), (27, 43), (46, 22)], fill="#eef2df", width=7, joint="curve")
-    draw.ellipse((45, 45, 55, 55), fill="#dd9259")
+    draw.rounded_rectangle((1, 1, 63, 63), radius=17, fill="#1b2537")
+    draw.line([(16, 32), (27, 43), (46, 22)], fill="#ffffff", width=7, joint="curve")
+    draw.ellipse((45, 45, 55, 55), fill="#a5b4fc")
     return image
 
 

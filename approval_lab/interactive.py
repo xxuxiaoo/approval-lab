@@ -88,6 +88,7 @@ class ReviewSession:
             self.engine.refresh_summary(self.run_id, self.config)
             raise
         response = {"text": completion.text, "tool_calls": completion.calls,
+                    "tool_requests": completion.tool_requests,
                     "continuation": completion.continuation, "model": completion.model,
                     "response_id": completion.response_id, "request_id": completion.request_id,
                     "stop_reason": completion.stop_reason, "incomplete": completion.incomplete}

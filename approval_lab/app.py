@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from .benchmark import builtin_cases, metadata
+from .assessment import assess
 from .cc_capture import capture_claude
 from .interactive import review_rows
 from .native_api import register_native_routes
@@ -99,7 +99,7 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
 
     @app.get("/api/meta")
     async def meta():
-        return {"version": __version__, "benchmark": metadata(), "pricing_presets": PRICING_PRESETS,
+        return {"version": __version__, "pricing_presets": PRICING_PRESETS,
                 "pricing_checked_at": "2026-11-15", "scheduler_requires_running_app": True,
                 "official": scenario_metadata(), "official_profiles": profile_status(app.state.store.directory)}
 
@@ -119,7 +119,10 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
     async def official_cases(profile: str = "both", scope: str = "full"):
         values = []
         for case in builtin_scenarios():
-            if profile not in ("both", case.scene.profile) or scope == "light" and not case.light:
+            from .scenarios import REGRESSION_KEYS
+
+            if (profile not in ("both", case.scene.profile) or scope == "light" and not case.light or
+                    scope == "regression" and case.id.rsplit(".", 1)[-1] not in REGRESSION_KEYS):
                 continue
             value = case.model_dump()
             value["context_chars"] = sum(len(t.text) for t in case.scene.turns)
@@ -182,14 +185,16 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
 
     @app.get("/api/cases")
     async def cases(mode: str = "full"):
-        return [c.model_dump() for c in builtin_cases() if mode != "light" or c.light]
+        raise HTTPException(410, "旧合成短题已停用；请使用 /api/official/cases。历史报告可继续查看和导出。")
 
     @app.post("/api/runs/preview")
     async def preview_run(config: RunInput):
         selected, _provider, total = app.state.engine.validate(config)
-        return {"requests": total, "unique_cases": len(selected),
+        return {"scenarios": total, "requests": total, "unique_cases": len(selected),
                 "request_budget": config.request_budget,
                 "requests_are_lower_bound": config.mode == "official",
+                "output_limits": {"codex": config.max_output_tokens, "cc_fast": config.max_output_tokens,
+                                  "cc_thinking": 10000} if config.mode == "official" else None,
                 "risky_cases": sum(c.expected != "allow" for c in selected),
                 "safe_cases": sum(c.expected == "allow" for c in selected)}
 
@@ -225,8 +230,9 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
         run["snapshot"].pop("official_cases", None)
         run["snapshot"].pop("official_profiles", None)
         if run["config"]["mode"] == "official":
-            run["review_turns"] = [{key: value for key, value in row.items() if key != "request"}
-                                   for row in review_rows(app.state.store, run_id)]
+            traces = review_rows(app.state.store, run_id)
+            run["assessment"] = assess(run, run["results"], traces)
+            run["review_turns"] = [{key: value for key, value in row.items() if key != "request"} for row in traces]
         return run
 
     @app.get("/api/runs/{run_id}/turns/{trace_id}")
@@ -252,9 +258,10 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
         snapshot.setdefault("initial_pricing", run["config"]["pricing"])
         snapshot.setdefault("pricing_revisions", []).append({"at": now_iso(), "pricing": pricing.model_dump()})
         run["config"]["pricing"] = pricing.model_dump()
+        run["config"]["pricing_confirmed"] = True
         app.state.store.execute("UPDATE runs SET config=?,snapshot=? WHERE id=?",
                                 (dumps(run["config"]), dumps(snapshot), run_id))
-        app.state.engine.refresh_summary(run_id)
+        app.state.engine.refresh_summary(run_id, pricing_only=True)
         return get_run(run_id)
 
     @app.get("/api/runs/{run_id}/export")
@@ -263,6 +270,7 @@ def create_app(data_dir=None, client_factory=ProviderClient, scheduler=True):
         run["results"] = result_rows(app.state.store, run_id)
         if run["config"]["mode"] == "official":
             run["review_turns"] = review_rows(app.state.store, run_id)
+            run["assessment"] = assess(run, run["results"], run["review_turns"])
         if format == "csv":
             output = io.StringIO(newline="")
             fields = ["case_id", "title", "category", "repeat_index", "expected", "decision", "error",

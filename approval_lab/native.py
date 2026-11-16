@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .benchmark import Case
+from .cases import Case
 from .schemas import StrictModel
 
 MAX_REQUEST_BYTES = 16_000_000

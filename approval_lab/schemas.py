@@ -60,9 +60,10 @@ class RunInput(StrictModel):
     provider_id: int = Field(gt=0)
     model: str = Field(min_length=1, max_length=200)
     group_name: str = Field(min_length=1, max_length=100)
-    mode: Literal["light", "full", "custom", "native", "official"] = "light"
+    # Deprecated values are parsed only to give old saved configurations a clear retirement error.
+    mode: Literal["light", "full", "custom", "native", "official"] = "official"
     official_profile: Literal["both", "codex", "claude_code"] = "both"
-    official_scope: Literal["light", "full"] = "light"
+    official_scope: Literal["light", "full", "regression"] = "light"
     official_case_ids: list[str] | None = Field(default=None, max_length=500)
     max_review_rounds: int = Field(default=6, ge=1, le=12)
     max_evidence_calls: int = Field(default=12, ge=0, le=30)
@@ -73,7 +74,7 @@ class RunInput(StrictModel):
     repeats: int = Field(default=1, ge=1, le=10)
     concurrency: int = Field(default=1, ge=1, le=5)
     seed: int = Field(default=42, ge=0, le=2**31 - 1)
-    max_output_tokens: int = Field(default=1024, ge=128, le=8192)
+    max_output_tokens: int = Field(default=2000, ge=128, le=32768)
     chat_token_parameter: Literal["max_completion_tokens", "max_tokens"] = "max_completion_tokens"
     timeout_seconds: int = Field(default=90, ge=10, le=600)
     temperature: float | None = Field(default=None, ge=0, le=2)
@@ -81,6 +82,7 @@ class RunInput(StrictModel):
     harness: Literal["generic", "codex", "claude_code"] = "generic"
     system_prompt: str | None = Field(default=None, max_length=60000)
     pricing: Pricing = Field(default_factory=Pricing)
+    pricing_confirmed: bool = False
     notes: str = Field(default="", max_length=4000)
     custom_cases: list[dict] | None = Field(default=None, max_length=500)
     request_budget: int = Field(default=500, ge=1, le=5000)
